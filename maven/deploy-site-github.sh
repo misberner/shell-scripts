@@ -17,13 +17,15 @@
 # limitations under the License.
 #
 
+
+# Print detailed usage information on stderr
 print_usage() {
-	cat <<EOF
+	cat >&2 <<EOF
 Usage: $0 [options]
 
 Allowed options (all options are optional):
  -h                 Print this help message and exit
- -r <remote>        The Git remote to use
+ -U <url>           The Git URL to use
                       (default: the first GitHub remote used for pushing)
  -d <maven-dir>     The Maven project directory to use
                       (default: current working directory)
@@ -43,10 +45,26 @@ Allowed options (all options are optional):
 EOF
 }
 
+info() {
+	[ "$QUIET" != "yes" ] && echo "$@"
+}
+
+# Perform an echo on stderr
+eecho() {
+	echo >&2 "$@"
+}
+
+# Print an error message and exit with an error exit code
+die() {
+	eecho "$@"
+	exit 1
+}
 
 set -o pipefail
 
 
+
+# Option defaults
 MVN_PROJECT_DIR=.
 PURGE=no
 SKIP_SITE=no
@@ -54,18 +72,16 @@ SKIP_STAGING=no
 GIT_BRANCH=gh-pages
 RELATIVE_SITE_PATH=/maven-site/
 
-MVN=`which mvn`
-GIT=`which git`
 
-
-while getopts ":hr:d:ps:u:m:12b:P:" opt; do
+# Parse options
+while getopts ":hr:d:ps:u:m:12b:P:q" opt; do
 	case "$opt" in
 		h)
 			print_usage
 			exit 0
 			;;
-		r)
-			GIT_REMOTE="$OPTARG"
+		U)
+			GIT_URL="$OPTARG"
 			;;
 		d)
 			MVN_PROJECT_DIR="$OPTARG"
@@ -95,42 +111,55 @@ while getopts ":hr:d:ps:u:m:12b:P:" opt; do
 		P)
 			RELATIVE_SITE_PATH="$OPTARG"
 			;;
+		q)
+			QUIET="yes"
+			;;
 		\?)
-			echo >&2 "Invalid option: -$OPTARG"
-			exit 1
+			die "Invalid option: -$OPTARG"
 			;;
 		:)
-			echo >&2 "Option -$OPTARG requires an argument"
-			exit 1
+			die "Option -$OPTARG requires an argument"
 			;;
 	esac
 done
 
 
 
+# Test prerequisites
+[ -z "$MVN" ] && MVN=`which mvn`
+[ -z "$GIT" ] && GIT=`which git`
 
-if [ -z "$GIT_REMOTE" ]; then
-	GIT_REMOTE=`git remote -v | egrep 'github\.com.*\(push\)$' | head -n 1 | awk '{print$2}'`
+[ -x "$MVN" ] || die "Cannot use Maven executable \`$MVN'"
+[ -x "$GIT" ] || die "Cannot use Git executable \`$GIT'"
 
-	if [ "$?" -ne 0 -o -z "$GIT_REMOTE" ]; then
-		echo "Could not determine Git remote and none specified. Exiting ..."
-		exit 1
+
+
+# Determine Git URL
+if [ -z "$GIT_URL" ]; then
+	GIT_URL=`git remote -v | egrep 'github\.com.*\(push\)$' | head -n 1 | awk '{print$2}'`
+
+	if [ "$?" -ne 0 -o -z "$GIT_URL" ]; then
+		die "Could not determine Git URL and none specified. Exiting ..."
 	fi
 fi
 
-echo "Git remote is $GIT_REMOTE"
+info "Git URL is $GIT_URL"
+
 
 cd "$MVN_PROJECT_DIR"
 
 if [ "$SKIP_STAGING" != "yes" ]; then
 	if [ "$SKIP_SITE" != "yes" ]; then
-		echo "Creating site ..."
-		"$MVN" site:site || { echo "Failed to create site. Exiting ..."; exit 1; }
+		info "Creating site ..."
+		"$MVN" site:site || die "Failed to create site. Exiting ..."
 	fi
-	echo "Staging site ..."
-	"$MVN" site:stage || { echo "Failed to stage site. Exiting ..."; exit 1; }
+	info "Staging site ..."
+	"$MVN" site:stage || die "Failed to stage site. Exiting ..."
 fi
 
+
+
+# Determine staging directory
 if [ -z "$STAGING_DIR" ]; then
 	STAGING_DIR=`$MVN help:evaluate -Dexpression=stagingDirectory | egrep -v '^\['`
 
@@ -140,25 +169,24 @@ if [ -z "$STAGING_DIR" ]; then
 fi
 STAGING_DIR=`readlink -f "$STAGING_DIR"`
 if [ $? -ne 0 -o ! -d "$STAGING_DIR" ]; then
-	echo "Staging directory $STAGING_DIR does not exist or is not a directory. Exiting ..."
-	exit 1
+	die "Staging directory $STAGING_DIR does not exist or is not a directory. Exiting ..."
 fi
 
-
+# Temporary directory for cloning site branch
 TEMP_DIR=`mktemp -d --suffix=deploy-github-site`
 cd "$TEMP_DIR"
 
-echo "Cloning branch $GIT_BRANCH into $TEMP_DIR ..."
-"$GIT" clone "$GIT_REMOTE" -b "$GIT_BRANCH" --single-branch
+info "Cloning branch $GIT_BRANCH into $TEMP_DIR ..."
+"$GIT" clone "$GIT_URL" -b "$GIT_BRANCH" --single-branch
 if [ $? -ne 0 ]; then
-	echo "Okay, that did not work. Trying to create empty branch."
-	"$GIT" init || { echo "Git error. Exiting ..."; exit 1; }
-	"$GIT" checkout --orphan "$GIT_BRANCH" || { echo "Git error. Exiting ..."; exit 1; }
-	touch ".gitignore" || { echo "Git error. Exiting ..."; exit 1; }
-	"$GIT" add ".gitignore" || { echo "Git error. Exiting ..."; exit 1; }
-	"$GIT" commit -m "Initialized empty site branch." || { echo "Git error. Exiting ..."; exit 1; }
-	"$GIT" remote add sitehost "$GIT_REMOTE" || { echo "Git error. Exiting ..."; exit 1; }
-	"$GIT" push -u sitehost "$GIT_BRANCH" || { echo "Git error. Exiting ..."; exit 1; }
+	info "Okay, that did not work. Trying to create empty branch."
+	"$GIT" init || die "Git error. Exiting ..."
+	"$GIT" checkout --orphan "$GIT_BRANCH" || die "Git error. Exiting ..."
+	touch ".gitignore" || die "Git error. Exiting ..."
+	"$GIT" add ".gitignore" || die "Git error. Exiting ..."
+	"$GIT" commit -m "Initialized empty site branch." || die "Git error. Exiting ..."
+	"$GIT" remote add sitehost "$GIT_URL" || die "Git error. Exiting ..."
+	"$GIT" push -u sitehost "$GIT_BRANCH" || die "Git error. Exiting ..."
 fi
 
 LOCAL_SITE_PATH="$TEMP_DIR/$RELATIVE_SITE_PATH"
@@ -186,7 +214,7 @@ fi
 
 "$GIT" push || { echo "Push failed. Exiting ..."; exit 1; }
 
-echo "Site deployment successful."
+info "Site deployment successful."
 
 cd
 rm -rf "$TEMP_DIR"
