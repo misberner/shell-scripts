@@ -1,5 +1,7 @@
 #!/bin/bash
 #
+# deploy-site-github.sh -- Deploy a Maven site to GitHub pages.
+#
 # Copyright (c) 2013 by Malte Isberner (https://github.com/misberner).
 # 
 # Licensed under the Apache License, Version 2.0 (the "License");
