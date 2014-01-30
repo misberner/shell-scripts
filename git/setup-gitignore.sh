@@ -25,9 +25,14 @@ die() {
 GIT="`which git`"
 WGET="`which wget`"
 
+GITIGNORE_AUTO_ADD="yes"
+GITIGNORE_AUTO_COMMIT="no"
+GITIGNORE_AUTO_PUSH="no"
+
+
 TARGET="./.gitignore"
 
-[ $# -eq 1 ] || die "Usage: $0 [style]"
+[ $# -eq 0 ] && die "Usage: $0 <style1> [...<stylen>]"
 
 [ -x "$GIT" ] || die  "Could not determine git executable"
 [ -x "$WGET" ] || die "Could not determine wget executable"
@@ -35,32 +40,44 @@ TARGET="./.gitignore"
 [ ! -f "$TARGET" ] || die ".gitignore file already exists"
 
 
-STYLE="$1"
 
-AUTO_ADD="yes"
-AUTO_COMMIT="no"
+declare -a STYLES=("$@")
 
-SUCCESS=0
+declare -a TEMPFILES
 
-TEMPFILE="`mktemp`"
-
-for root in "${GITIGNORE_ROOTS[@]}"; do
-	FILENAME="$STYLE.gitignore"
-	wget "$root/$FILENAME" -q -O "$TEMPFILE"
-	if [ $? -eq 0 ]; then
-		mv "$TEMPFILE" "$TARGET"
-		echo "Successfully retrieved $FILENAME from $root"
-		if [ "$AUTO_ADD" = "yes" ]; then
-			"$GIT" add "$TARGET"
-			if [ "$AUTO_COMMIT" = "yes" ]; then
-				"$GIT" commit -m "Added .gitignore" "$TARGET"
-			fi
+for style in "${STYLES[@]}"; do
+	FILENAME="$style.gitignore"
+	SUCCESS=0
+	for root in "${GITIGNORE_ROOTS[@]}"; do
+		TEMPFILE="`mktemp`"
+		wget "$root/$FILENAME" -q -O "$TEMPFILE"
+		if [ $? -eq 0 ]; then
+			echo "Successfully retrieved $FILENAME from $root"
+			TEMPFILES+=("$TEMPFILE")
+			SUCCESS=1
+			break
+		else
+			rm "$TEMPFILE"
 		fi
-		exit 0
-	else
-		rm "$TEMPFILE"
+	done
+
+	if [ "$SUCCESS" -eq 0 ]; then
+		[ "${#TEMPFILES}" -gt 0 ] && rm "${TEMPFILES[@]}"
+		die "Failed to retrieve $FILENAME"
 	fi
 done
 
-eecho "Could not find .gitignore of style $STYLE"
-exit 1
+
+cat "${TEMPFILES[@]}" | uniq >"$TARGET"
+rm "${TEMPFILES[@]}"
+
+if [ "$GITIGNORE_AUTO_ADD" = "yes" ]; then
+	"$GIT" add "$TARGET"
+	if [ "$GITIGNORE_AUTO_COMMIT" = "yes" ]; then
+		"$GIT" commit -m "Added .gitignore" "$TARGET"
+		if [ "$GITIGNORE_AUTO_PUSH" = "yes" ]; then
+			"$GIT" push
+		fi
+	fi
+fi
+
